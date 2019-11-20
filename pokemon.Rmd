@@ -1,0 +1,253 @@
+---
+title: "pokemon"
+output: html_document
+---
+
+## libraries
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(stats)
+library(magrittr)
+library(broom)
+```
+
+## csv 
+
+```{r}
+## https://www.kaggle.com/abcsds/pokemon/data
+setwd("P:/Bomi/dabbles")
+df <- read.csv("Pokemon.csv")
+
+```
+
+## cleaning
+
+```{r}
+poke <- df %>%
+  rename_all(., tolower) %>% # like working w/ lower case names as R is case - sensitive
+  select(name,
+         type            = type.1,
+         total,
+         hit_point       = hp,
+         attack,
+         defense,
+         special_attack  = sp..atk,
+         special_defense = sp..def,
+         speed           = speed,
+         generation,
+         legendary) # aligned by align arrows 
+```
+
+## function
+```{r}
+tukey_tbl <- function(mod) (
+  mod %>% 
+  TukeyHSD %>% 
+  magrittr::use_series("legendary") %>% 
+  as_tibble(rownames = "comparison") %>% 
+  separate(comparison, c("x", "y"), sep = "-", remove = F)
+)
+```
+
+## explanatory
+```{r}
+names(poke)
+
+here <- theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+## of pokemon types
+poke %>%
+  group_by(type) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  ggplot(aes(x = reorder(type, n), y = n)) +
+  geom_col(fill = "lightpink") + 
+  theme_bw() +
+  geom_text(aes(label = n)) +
+  labs(x = "Type", y = "Count",
+       title = "Total Types of Pokemon") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# ## count
+# poke %>%
+#   group_by(type, legendary) %>%
+#   summarize(n = n()) %>% # get the count by type, legend
+#   mutate(percent = n / sum(n)) %>%
+#   arrange(desc(n)) %>% # arrange in descending order
+#   ggplot(aes(x = reorder(type, n), y = n, fill = legendary)) +
+#   geom_col(position = "dodge") +
+#   theme_bw() +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   labs(x = "type", y = "count") +
+#   scale_fill_manual(values = c("lightgreen", "lightblue")) +
+#   geom_text(aes(label = n), position = position_dodge(0.9))
+```
+
+
+## a general approach without brekaing down by legendary
+
+```{r}
+## aov results - p value
+aov(total ~ type, data = poke) %>%
+  tidy() %>%
+  filter(term == "type") %>%
+  pull(p.value)
+
+ggplot(poke, aes(x = reorder(type, total), 
+                              y = total, color = type)) +
+  geom_boxplot() +
+  #scale_fill_manual(values = c("lightgreen", "lightblue")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  #guides(fill = guide_legend(reverse = TRUE)) +
+  labs(x = "Type", 
+       y = "Power",
+       title = "Power Distibution of Pokemon") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position = "none")
+
+## who are these outliers?
+poke %>% 
+  filter(type == "Water" & total > 700 |
+           type == "Flying" & total < 300)
+
+## Tukey HSD - where do these differences like? can only compare two groups at a time
+aov(total ~ type, data = poke) %>%
+  tidy() %>%
+  mutate(p_value = p.adjust(p.value, method = "bonferroni")) %>% #adjust p value for multiple comparisons
+  filter(term == "type") 
+
+aov(total ~ type, data = poke) %>%
+  TukeyHSD() %>% 
+  .$type %>%
+  data.frame(type = rownames(res_df), row.names = NULL) %>% 
+  mutate(p_adj = p.adjust(p.adj, method = "bonferroni")) %>% 
+  filter(p_adj < 0.05) %>%  # only looking at the significant ones
+  ggplot(aes(x = reorder(type, diff), y = diff)) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr), 
+                position = position_dodge(0.9)) +
+  theme_bw() +
+  coord_flip() +
+  geom_hline(yintercept = 0, lty = "dashed", color = "red") +
+  labs(x = "Comparisons between TWo Types at a Time",
+       x = "Difference")
+
+```
+
+## boxplot after nesting
+
+```{r}
+## t-test of power ~ legendary
+t.test(total ~ legendary, poke) %>% tidy()
+
+## t-test (default assumes unequal variance!) - boxplot first
+ggplot(poke, aes(x = reorder(type, total), 
+                              y = total, 
+                              fill = legendary)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("lightgreen", "lightblue")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  labs(x = "Type", 
+       y = "Power",
+       title = "Power Distibution of Pokemon") + 
+  theme(plot.title = element_text(hjust = 0.5))
+  
+## test
+Affairs %>%
+  select_if(is.numeric) %>%
+  map(~t.test(. ~ Affairs$gender)$p.value)
+
+## who are these outliers?
+poke %>%
+  filter(type %in% c("Rock", "Fire"),
+           total > 600,
+           legendary == "True")
+```
+
+## group by pokemon type and run an anova
+
+```{r}
+poke %>%
+  filter(!(type %in% c("Fighting", "Poison", "Bug"))) %>% 
+  nest(data = -legendary) %>%
+  mutate(result = map(data, ~aov(total ~ type, .)),
+         tidy = map(result, tidy)) %>%
+  unnest(tidy) %>%
+  mutate(p_adj = p.adjust(p.value, method = "bonferroni")) %>% # need to adjust p-values for running multiple independent test simultaneously 
+  filter(term == "type")
+# normally ANOVA, then have to use Tukey HSD to determine which pokemon types have difference but no need as p_adj > 0.05
+```
+
+
+## where are most of these legendaries?
+```{r}
+poke %>%
+  group_by(type, legendary) %>%
+  filter(legendary == "True") %>%
+  summarize(n = n()) %>%
+  arrange(desc(n))
+```
+
+
+## learning more about the total power - where are they coming from?
+
+```{r}
+names(poke)
+head(poke)
+
+another_poke <- poke %>%
+  gather("key", "value", hit_point:speed) %>%
+  arrange(name)
+
+poke %>%
+  gather("key", "value", hit_point:speed) %>%
+  arrange(name) %>%
+  group_by(type, key) %>%
+  summarize(mean_value = mean(value),
+            n = n()) %>%
+  ggplot(aes(x = reorder(type, mean_value), y = mean_value, fill = key)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~type, scale = "free_x") +
+  theme_bw() +
+  geom_text(aes(label = round(mean_value, 1)), position = position_dodge(0.9)) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+poke %>%
+  gather("key", "value", hit_point:speed) %>%
+  arrange(name) %>%
+  group_by(type, key) %>%
+  summarize(mean_value = mean(value),
+            n = n()) %>%
+  ggplot(aes(x = reorder(type, mean_value), y = mean_value, fill = key)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~type, scale = "free_x") +
+  theme_bw() +
+  geom_text(aes(label = round(mean_value, 1)), position = position_dodge(0.9)) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+## determining if there is significant difference
+
+test <- another_poke %>%
+  nest(data = -type) %>%
+  mutate(anov = map(data, ~aov(value ~ key, .)),
+         result = map(anov, tidy)) %>%
+  unnest(result) %>%
+  mutate(p_adj = p.adjust(p.value, method = "bonferroni")) %>%
+  filter(term == "key") %>%
+  arrange(p_adj)
+
+test$data[[18]] %>% View()
+
+## if this contained # of wins - is it strength? Or is it from other areas, perhaps even who this pokemon challenged via permutations, that could inform much and not just about strength. For now though, this evidence suggests that pokemons. You wonder how pokemon bugs lived for this long and was not extinguished by natural selection - possibly other pokemons did not see worth in fighting
+```
+
